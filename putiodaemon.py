@@ -21,7 +21,7 @@ class MyHandler(SimpleHTTPRequestHandler):
         parsedParams = urlparse.urlparse(self.path)
         queryParsed = urlparse.parse_qs(parsedParams.query)
         try: 
-            uri = putioDaemon.uri
+            uri = instance.httppath
         except: 
             print "Something failed:", sys.exc_info()
         if parsedParams.path == "/putiodaemon" :
@@ -44,7 +44,6 @@ class putioDaemon():
         self.pidfile = "/var/run/putiodaemon/putiodaemon.pid"
         self.conffile = "/etc/putiodaemon"
         self.listen = 0
-        self.uri = "/moo"
 
 
 
@@ -94,6 +93,7 @@ class putioDaemon():
 
 
 def putioCheck():
+    global instance 
     instance = putioDaemon()
     instance.getinputs(sys.argv[1:])
     instance.readconfig()
@@ -125,10 +125,10 @@ def putioCheck():
 		    os.remove(instance.torrentdir+"/"+torrent)
         time.sleep(5)
 
-#def run():
-#    context = daemon.DaemonContext(stdout=sys.stdout)
-#    with context:
-#        putioCheck()
-putioCheck()
-#if __name__ == "__main__":
-#    run()
+def run():
+    context = daemon.DaemonContext(stdout=sys.stdout)
+    with context:
+        putioCheck()
+#putioCheck()
+if __name__ == "__main__":
+    run()
