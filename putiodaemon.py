@@ -27,18 +27,22 @@ class ThreadedHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer)
 class MyHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
+        """ wanted to write to a file rather then stderr so I have to override log_message for the http server """
         logging.info("%s - - [%s] %s\n" %
                          (self.client_address[0],
                           self.log_date_time_string(),
                           format%args))
 
     def do_POST(self):
+        """ The HTTP server calls this for ever post message """
         parsedParams = urlparse.urlparse(self.path)
         queryParsed = urlparse.parse_qs(parsedParams.query)
         try: 
             uri = instance.httppath
         except: 
             logging.error('Something failed: %s', sys.exc_info())
+        # We respond with a 404 unless you put in this url  I'm using the PUTIO token maybe something
+        # Would be safer
         if  '/' + instance.httppath + '/api/' + instance.token in parsedParams.path :
             form = cgi.FieldStorage(
                 fp=self.rfile, 
@@ -110,6 +114,7 @@ class putioDaemon():
         logging.info('Started')
 
     def download(self,form):
+        """ This gets called when putio does the call back URL """
         logging.info("Got Call back with data: %s",form)
         logging.info("Processing file_id %s",form['file_id'].value)
         client = putio.Client(self.token)
@@ -117,13 +122,14 @@ class putioDaemon():
         self.delete = 0 #May want to change this later
         for f in files:
             if str(f.id) == str(form['file_id'].value):
-               # Need to read this in from somewhere
                 logging.info('Download of %s starting',f.name)
                 client.File.download(f, dest=self.downloadtemp_dir, delete_after_download=self.delete)
                 logging.info('Download of %s completed',f.name)
+		# We use a temporary location and move it just incase you have a renamer in place.  
                 shutil.move(self.downloadtemp_dir+"/"+str(f.name),self.download_dir)
 
 def WebServer():
+    """ Sets up the Web server for the call back URL from putio """
     HandlerClass = SimpleHTTPRequestHandler
     ServerClass  = BaseHTTPServer.HTTPServer
     HandlerClass.protocal_version = "HTTP/1.1"
@@ -138,6 +144,7 @@ def WebServer():
 
  
 def putioCheck():
+    """ Should probably be in a class """
     global instance 
     instance = putioDaemon()
     instance.getinputs(sys.argv[1:])
@@ -177,10 +184,10 @@ def putioCheck():
     if instance.listen:
        instance.httpd.shutdown()     
 def run():
-#    context = daemon.DaemonContext(stdout=sys.stdout)
-#    with context:
-#        putioCheck()
-    putioCheck()
+    context = daemon.DaemonContext(stdout=sys.stdout)
+    with context:
+        putioCheck()
+#    putioCheck()
 
 if __name__ == "__main__":
     run()
