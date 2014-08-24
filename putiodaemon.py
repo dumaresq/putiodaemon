@@ -2,6 +2,7 @@
 
 import daemon
 import time
+import shutil
 import os
 import putio
 import lockfile
@@ -10,30 +11,51 @@ import getopt
 import ConfigParser
 import BaseHTTPServer
 import urlparse
+import logging
+import threading
+import SocketServer
+import cgi
 
 from lockfile.pidlockfile import PIDLockFile
 from lockfile import AlreadyLocked
+#from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
 
+class ThreadedHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
+    pass 
 
 class MyHandler(SimpleHTTPRequestHandler):
-    def do_GET(self):
+
+    def log_message(self, format, *args):
+        logging.info("%s - - [%s] %s\n" %
+                         (self.client_address[0],
+                          self.log_date_time_string(),
+                          format%args))
+
+    def do_POST(self):
         parsedParams = urlparse.urlparse(self.path)
         queryParsed = urlparse.parse_qs(parsedParams.query)
         try: 
             uri = instance.httppath
         except: 
-            print "Something failed:", sys.exc_info()
-        if parsedParams.path == "/putiodaemon" :
-            self.processMyRequest(queryParsed)
+            logging.error('Something failed: %s', sys.exc_info())
+        if  '/' + instance.httppath + '/api/' + instance.token in parsedParams.path :
+            form = cgi.FieldStorage(
+                fp=self.rfile, 
+                headers=self.headers,
+                environ={'REQUEST_METHOD':'POST',
+                     'CONTENT_TYPE':self.headers['Content-Type'],
+                })
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write("Recieved")
+            instance.download(form)
+            self.wfile.close
         else:
-            SimpleHTTPRequestHandler.do_GET(self);
-
-    def processMyRequest(self, query):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write("recieved")
-        self.wfile.close
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write("NotFound")
+            self.wfile.close
  
 
 class putioDaemon():
@@ -46,7 +68,6 @@ class putioDaemon():
         self.listen = 0
 
 
-
     def readconfig(self):
        config = ConfigParser.RawConfigParser(allow_no_value=True)
        config.read(self.conffile)
@@ -54,10 +75,14 @@ class putioDaemon():
        self.torrentdir = config.get('putioDaemon', 'TorrentDirectory')
        self.token = config.get('putioDaemon', 'oauth_token')
        self.listen = config.get('putioDaemon', 'listen')
+       self.logfile = config.get('putioDaemon', 'logfile')
        if self.listen:
            self.ip = config.get('putioDaemon', 'ip')
            self.port = config.get('putioDaemon', 'port')
            self.httppath = config.get ('putioDaemon', 'httppath')
+           self.callback = config.get ('putioDaemon', 'callback')
+           self.download_dir = config.get ('putioDaemon','downloaddir')
+           self.downloadtemp_dir = config.get ('putioDaemon','downloadtempdir')
           
     def getinputs(self, argv):
         try:
@@ -77,26 +102,47 @@ class putioDaemon():
              elif opt in ("-c", "--conffile"):
                   self.conffile = arg
 
-    def WebServer(self):
-        HandlerClass = SimpleHTTPRequestHandler
-        ServerClass  = BaseHTTPServer.HTTPServer
-        HandlerClass.protocal_version = "HTTP/1.1"
+    def setuplogging(self):
         try:
-            self.httpd = ServerClass((self.ip,int(self.port)),MyHandler)
+            logging.basicConfig(filename=self.logfile, format='%(levelname)s %(asctime)s:%(message)s', level=logging.DEBUG)
         except:
-            print "Failed to set ServerClass", sys.exc_info()
-        self.sa = self.httpd.socket.getsockname()
-        print "Serving HTTP on", self.sa[0], "port", self.sa[1], "..."
-        self.httpd.serve_forever()
+            print "Can't Open Logfile:", sys.exc_info()
+        logging.info('Started')
+
+    def download(self,form):
+        logging.info("Got Call back with data: %s",form)
+        logging.info("Processing file_id %s",form['file_id'].value)
+        client = putio.Client(self.token)
+        files = client.File.list()
+        self.delete = 0 #May want to change this later
+        for f in files:
+            if str(f.id) == str(form['file_id'].value):
+               # Need to read this in from somewhere
+                logging.info('Download of %s starting',f.name)
+                client.File.download(f, dest=self.downloadtemp_dir, delete_after_download=self.delete)
+                logging.info('Download of %s completed',f.name)
+                shutil.move(self.downloadtemp_dir+"/"+str(f.name),self.download_dir)
+
+def WebServer():
+    HandlerClass = SimpleHTTPRequestHandler
+    ServerClass  = BaseHTTPServer.HTTPServer
+    HandlerClass.protocal_version = "HTTP/1.1"
+    try:
+        instance.httpd = ThreadedHTTPServer((instance.ip,int(instance.port)),MyHandler)
+    except:
+        logging.error('Failed to set ServerClass %s', sys.exc_info())
+    instance.sa = instance.httpd.socket.getsockname()
+    logging.info('Serving HTTP on %s port %s...', instance.sa[0], instance.sa[1])
+    threading.Thread(target=instance.httpd.serve_forever).start()
+
+
  
-
-
-
 def putioCheck():
     global instance 
     instance = putioDaemon()
     instance.getinputs(sys.argv[1:])
     instance.readconfig()
+    instance.setuplogging()
     pidfile = PIDLockFile(instance.pidfile, timeout=-1)
     try:
         pidfile.acquire()
@@ -111,24 +157,30 @@ def putioCheck():
         print "Something failed:", sys.exc_info()
         exit (1)
     if instance.listen:
-       print "About to start web server"
-       instance.WebServer()
+            WebServer()
     while True:
         if os.path.exists(instance.torrentdir):
-#            print "Found Dir %s" % instance.torrentdir 
             onlyfiles = [ f for f in os.listdir(instance.torrentdir) if os.path.isfile(os.path.join(instance.torrentdir,f))] 
             if len(onlyfiles):  
                 client = putio.Client(instance.token)
                 for torrent in onlyfiles:
-#                    print "working on %s" % torrent 
-                    client.Transfer.add_torrent(instance.torrentdir+"/"+torrent)
+                    logging.info('working on %s', torrent) 
+                    # if we are listening then use the callback_url
+                    callback_url = None
+                    if instance.listen:
+                       callback_url = 'http://'+instance.callback+'/'+instance.httppath+'/api/'+instance.token
+                    logging.info('Calling add_torrent for %s with %s',torrent,callback_url)
+#                    client.Transfer.add_torrent(instance.torrentdir+"/"+torrent, callback_url=callback_url)
+                    client.Transfer.add_url("http://torcache.net/torrent/A8BF5CEF16AEB33EE6541CACD52DC5D88B3B1373.torrent?title=[kickass.to]under.the.dome.s02e03.force.majeure.720p.web.dl.dd5.1.h.264.ntb.rartv", callback_url=callback_url)
 		    os.remove(instance.torrentdir+"/"+torrent)
         time.sleep(5)
-
+    if instance.listen:
+       instance.httpd.shutdown()     
 def run():
-    context = daemon.DaemonContext(stdout=sys.stdout)
-    with context:
-        putioCheck()
-#putioCheck()
+#    context = daemon.DaemonContext(stdout=sys.stdout)
+#    with context:
+#        putioCheck()
+    putioCheck()
+
 if __name__ == "__main__":
     run()
