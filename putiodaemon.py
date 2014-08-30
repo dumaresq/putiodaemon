@@ -177,8 +177,7 @@ def putioCheck():
                     if instance.listen:
                        callback_url = 'http://'+instance.callback+'/'+instance.httppath+'/api/'+instance.token
                     logging.info('Calling add_torrent for %s with %s',torrent,callback_url)
-#                    client.Transfer.add_torrent(instance.torrentdir+"/"+torrent, callback_url=callback_url)
-                    client.Transfer.add_url("http://torcache.net/torrent/A8BF5CEF16AEB33EE6541CACD52DC5D88B3B1373.torrent?title=[kickass.to]under.the.dome.s02e03.force.majeure.720p.web.dl.dd5.1.h.264.ntb.rartv", callback_url=callback_url)
+                    client.Transfer.add_torrent(instance.torrentdir+"/"+torrent, callback_url=callback_url)
 		    os.remove(instance.torrentdir+"/"+torrent)
         time.sleep(5)
     if instance.listen:
