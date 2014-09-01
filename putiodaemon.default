@@ -1,0 +1,22 @@
+# This file is sourced by /etc/init.d/putiodaemon
+#
+# Each setting is marked either "required" or "optional";
+# leaving any required setting unconfigured will cause
+# the service to not start.
+
+# [required] set path where couchpotato is installed:
+HOME=/usr/share/putiodaemon
+
+# [optional] change to 1 to enable daemon
+ENABLE_DAEMON=1
+
+# [required] user or uid of account to run the program as:
+USER=dumaresq
+
+# [optional] full path to the configuration file of your choice;
+# otherwise, the default location (/etc/putio) is used:
+CONFIG=/etc/putiodaemon
+
+# [optional] full path for the pidfile
+# otherwise, the default location /var/run/putiodaemon/putiodaemon.pid is used:
+PIDFILE=/var/run/putiodaemon/putiodaemon.pid
