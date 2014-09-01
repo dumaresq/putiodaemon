@@ -15,10 +15,10 @@ import logging
 import threading
 import SocketServer
 import cgi
+import signal
 
 from lockfile.pidlockfile import PIDLockFile
 from lockfile import AlreadyLocked
-#from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
 
 class ThreadedHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
@@ -42,7 +42,7 @@ class MyHandler(SimpleHTTPRequestHandler):
         except: 
             logging.error('Something failed: %s', sys.exc_info())
         # We respond with a 404 unless you put in this url  I'm using the PUTIO token maybe something
-        # Would be safer
+        # else would be safer
         if  '/' + instance.httppath + '/api/' + instance.token in parsedParams.path :
             form = cgi.FieldStorage(
                 fp=self.rfile, 
@@ -60,6 +60,13 @@ class MyHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write("NotFound")
             self.wfile.close
+
+    def do_GET(self):
+        """ The HTTP server should return 404 for EVERYTHING """
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write("NotFound")
+        self.wfile.close
  
 
 class putioDaemon():
@@ -69,30 +76,56 @@ class putioDaemon():
         self.token = ""
         self.pidfile = "/var/run/putiodaemon/putiodaemon.pid"
         self.conffile = "/etc/putiodaemon"
-        self.listen = 0
-
+        self.logfile = "/tmp/putiodaemon.log"
+        self.listen = True
+        self.delete = True
+        self.debug = 2
+	self.ip = "127.0.0.1"
+        self.port = "8765"
+        self.httppath = "/"
+        self.callback = ""
+        self.downoad_dir = "/var/tmp"
+        self.downloadtemp_dir = "/var/tmp"
 
     def readconfig(self):
        config = ConfigParser.RawConfigParser(allow_no_value=True)
        config.read(self.conffile)
-       # Needs work, maybe use .items or has_option ?
-       self.torrentdir = config.get('putioDaemon', 'TorrentDirectory')
-       self.token = config.get('putioDaemon', 'oauth_token')
-       self.listen = config.get('putioDaemon', 'listen')
-       self.logfile = config.get('putioDaemon', 'logfile')
-       if self.listen:
-           self.ip = config.get('putioDaemon', 'ip')
-           self.port = config.get('putioDaemon', 'port')
-           self.httppath = config.get ('putioDaemon', 'httppath')
-           self.callback = config.get ('putioDaemon', 'callback')
-           self.download_dir = config.get ('putioDaemon','downloaddir')
-           self.downloadtemp_dir = config.get ('putioDaemon','downloadtempdir')
+       if config.has_section('putioDaemon'):
+          configlist = config.options('putioDaemon')
+          if ('oauth_token' in configlist):
+             self.token = config.get('putioDaemon', 'oauth_token')
+          else:
+             print ('Config is missing oauth_token')
+             sys.exit(3)
+          if 'torrentdirectory' in configlist:
+             self.torrentdir = config.get('putioDaemon', 'TorrentDirectory')
+          if 'listen' in configlist:
+             self.listen = config.getboolean('putioDaemon', 'listen')
+          if 'logfile' in configlist:
+             self.logfile = config.get('putioDaemon', 'logfile')
+          if 'putiodelete' in configlist:
+             self.delete = config.getboolean('putioDaemon', 'putiodelete')
+             if self.listen:
+                if ('ip' in configlist and 'port' in configlist and 'httppath' in configlist 
+                         and 'callback' in configlist and 'downloaddir' in configlist and 'downloadtempdir' in configlist):
+                   self.ip = config.get('putioDaemon', 'ip')
+                   self.port = config.get('putioDaemon', 'port')
+                   self.httppath = config.get ('putioDaemon', 'httppath')
+                   self.callback = config.get ('putioDaemon', 'callback')
+                   self.download_dir = config.get ('putioDaemon','downloaddir')
+                   self.downloadtemp_dir = config.get ('putioDaemon','downloadtempdir')
+                else:
+                   print ('Config has Listen set to true but does not contain all of the required elements (ip,port,httppath,callback,downloaddir and downloadtempdir)')
+                   sys.exit(3)
+       else:
+          print 'Config file is missing section putioDaemon'
+          sys.exit(3)
           
     def getinputs(self, argv):
         try:
-            opts, args = getopt.getopt(argv,"hi:o:",["confile=","pidfile="])
+            opts, args = getopt.getopt(argv,"hi:o:",["confile=","pidfile=","debug="])
         except getopt.GetoptError:
-             print 'putiodaemon.py -c <configfile> -p <pidfile>'
+             print 'putiodaemon.py -c <configfile> -p <pidfile> -debug <1/2/3>'
              sys.exit(2)
         except:
              print "Something failed:", sys.exc_info()
@@ -105,10 +138,17 @@ class putioDaemon():
                   self.pidfile = arg
              elif opt in ("-c", "--conffile"):
                   self.conffile = arg
+             elif opt in ("-d", "--debug"):
+                  self.debug = int(arg)
 
     def setuplogging(self):
         try:
-            logging.basicConfig(filename=self.logfile, format='%(levelname)s %(asctime)s:%(message)s', level=logging.DEBUG)
+            loglevel = logging.INFO
+            if self.debug == 3:
+               loglevel = logging.DEBUG
+            if self.debug == 1:
+               loglevel = logging.ERROR
+            logging.basicConfig(filename=self.logfile, format='%(levelname)s %(asctime)s:%(message)s', level=loglevel)
         except:
             print "Can't Open Logfile:", sys.exc_info()
         logging.info('Started')
@@ -141,7 +181,16 @@ def WebServer():
     logging.info('Serving HTTP on %s port %s...', instance.sa[0], instance.sa[1])
     threading.Thread(target=instance.httpd.serve_forever).start()
 
-
+def handler(signum, frame):
+    """ I'm not sure why this is needed but it won't shutdown unless I manually kill httpd"""
+    logging.info('Signal handler called with signali %s', signum);
+    if instance.listen:
+      logging.info('Trying to Shutdown HTTP Server')
+      try:
+         instance.httpd.shutdown()
+      except: 
+         logging.error('Failed to shutdown %s', sys.exc_info())
+    sys.exit(0)
  
 def putioCheck():
     """ Should probably be in a class """
@@ -163,8 +212,10 @@ def putioCheck():
     except: 
         print "Something failed:", sys.exc_info()
         exit (1)
+    logging.debug('Listen is %s', instance.listen)
     if instance.listen:
-            WebServer()
+       WebServer()
+    signal.signal(signal.SIGTERM,handler)
     while True:
         if os.path.exists(instance.torrentdir):
             onlyfiles = [ f for f in os.listdir(instance.torrentdir) if os.path.isfile(os.path.join(instance.torrentdir,f))] 
@@ -178,10 +229,9 @@ def putioCheck():
                        callback_url = 'http://'+instance.callback+'/'+instance.httppath+'/api/'+instance.token
                     logging.info('Calling add_torrent for %s with %s',torrent,callback_url)
                     client.Transfer.add_torrent(instance.torrentdir+"/"+torrent, callback_url=callback_url)
-		    os.remove(instance.torrentdir+"/"+torrent)
+                    os.remove(instance.torrentdir+"/"+torrent)
         time.sleep(5)
-    if instance.listen:
-       instance.httpd.shutdown()     
+
 def run():
     context = daemon.DaemonContext(stdout=sys.stdout)
     with context:
